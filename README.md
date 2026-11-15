@@ -71,7 +71,7 @@ profiles = [ivg.patch_profile(im, order=3, criterion="horizontal") for im in ima
 X, labels = ivg.profile_matrix(profiles)       # X.shape == (n_images, n_labels)
 ```
 
-A complete example is in [`examples/example_ivg.ipynb`](examples/example_ivg.ipynb). It runs on synthetic
+A complete example is in [`examples/example_ivg.ipynb`](https://github.com/sierraporta/image-visibility-graph/blob/main/examples/example_ivg.ipynb). It runs on synthetic
 textures with tunable spatial correlation and on a real solar image from SDO/HMI, comparing an active
 region with the quiet Sun.
 
@@ -118,13 +118,14 @@ usually the practical choice, which is also the order used in the paper.
 
 | Function / class | Purpose |
 |---|---|
-| `patch_profile(img, order, criterion)` → `PatchProfile` | Visibility Patch profile (sparse; `.to_dense()`, `.frequencies()`, `.to_series()`, `.label_map()`, `.most_common()`) |
+| `patch_profile(img, order, criterion, stride)` → `PatchProfile` | Visibility Patch profile (sparse; `.to_dense()`, `.frequencies()`, `.to_series()`, `.label_map()`, `.most_common()`) |
 | `profile_matrix(profiles, normalize, labels)` | Aligned feature matrix for several images |
-| `patch_label_map(img, order, criterion)` | Label of the patch anchored at every pixel (*p* ≤ 4) |
+| `patch_label_map(img, order, criterion, stride)` | Label of the patch anchored at every pixel (*p* ≤ 4) |
 | `patch_codes(img, order, criterion)` | Raw per-line motif codes of every patch |
 | `decode_label(label, order)` / `decode_label_edges(...)` | Interpret a label |
 | `patch_layout(order)`, `label_bits(order)`, `n_labels(order)` | Patch geometry and label-space size |
-| `image_visibility_graph(img, criterion, directions)` → `ImageVisibilityGraph` | Full IVG/IHVG (`.edges`, `.degrees()`, `.degree_map()`, `.degree_distribution()`, `.adjacency()`, `.to_networkx()`) |
+| `paper_to_matlab_label`, `matlab_to_paper_label` | Convert order-3 labels to/from the numbering of the reference MATLAB code |
+| `image_visibility_graph(img, criterion, directions, lattice)` → `ImageVisibilityGraph` | Full IVG/IHVG (`.edges`, `.degrees()`, `.degree_map()`, `.degree_distribution()`, `.adjacency()`, `.to_networkx()`) |
 | `degree_map(img, criterion)` | Shortcut for the k-filtered image |
 | `visibility_graph_edges(series, criterion)` | VG/HVG of a 1D series |
 | `motif_codes(lines, criterion)`, `code_to_edges`, `admissible_motifs` | Sequential visibility motifs |
@@ -149,6 +150,18 @@ against independent references:
   - Continuous noise produces exactly the 188 distinct HVP<sub>3</sub> patches reported in the paper.
 - **Invariance:** the horizontal criterion is invariant under strictly increasing intensity transforms.
 
+### Cross-validation against the reference implementation
+
+`ivg` was also compared with the MATLAB code by the paper's first author
+([Jaia89/Image_Visibility](https://github.com/Jaia89/Image_Visibility)), run in GNU Octave.
+The test images included many repeated values, real-valued images, white noise, correlated
+surfaces and the 512×512 image that ships with that repository. The Visibility Patch
+profiles (both criteria) and the full IVG/IHVG edge sets are **identical**.
+
+The reference code numbers the 256 order-3 patches differently from Algorithm 1 of the paper.
+`ivg` follows the paper, and `to_dense(numbering="matlab")` gives the reference numbering.
+Scripts and details: [`validation/matlab_reference`](https://github.com/sierraporta/image-visibility-graph/blob/main/validation/matlab_reference/README.md).
+
 ## Performance
 
 Timings on a laptop CPU (NumPy only):
@@ -164,7 +177,8 @@ an N × N image in the worst case.
 ## Related software
 
 - [Jaia89/Image_Visibility](https://github.com/Jaia89/Image_Visibility): MATLAB
-  functions by the paper's first author to extract IVGs and Visibility Patch profiles.
+  functions (GPL-3.0) by the paper's first author to extract IVGs and Visibility Patch
+  profiles. `ivg` reproduces their output exactly (see Validation).
 - [ts2vg](https://github.com/CarlosBergillos/ts2vg): fast natural and horizontal
   visibility graphs for **time series** (1D).
 - [Lucas Lacasa's visibility graph page](https://sites.google.com/view/lucaslacasa/research-topics/visibility-graphs):
@@ -202,9 +216,9 @@ Related foundational work:
 
 ## License
 
-Code: [MIT](LICENSE) © 2026 David Sierra Porta.
+Code: [MIT](https://github.com/sierraporta/image-visibility-graph/blob/main/LICENSE) © 2026 David Sierra Porta.
 
 Example data: the solar image in `examples/data/` is courtesy of NASA/SDO and the AIA, EVE,
 and HMI science teams. SDO images are not copyrighted unless explicitly noted
 ([SDO data rules](https://sdo.gsfc.nasa.gov/data/rules.php)). See
-[`examples/data/README.md`](examples/data/README.md).
+[`examples/data/README.md`](https://github.com/sierraporta/image-visibility-graph/blob/main/examples/data/README.md).

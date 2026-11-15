@@ -273,6 +273,79 @@ def test_input_validation():
     raises(FileNotFoundError, ivg.load_gray, ROOT / "does_not_exist.png")
 
 
+def test_stride_subsamples_patch_grid():
+    img = RNG.integers(0, 256, size=(23, 30))
+    full = ivg.patch_label_map(img, 3, "natural")
+    for s in (1, 2, 5):
+        assert np.array_equal(ivg.patch_label_map(img, 3, "natural", stride=s), full[::s, ::s])
+        prof = ivg.patch_profile(img, 4, "horizontal", stride=s)
+        assert prof.n_patches == len(range(0, 20, s)) * len(range(0, 27, s))
+
+
+def matlab_reference_label(P, criterion):
+    """Literal port of the bit string used by visibilityPatches.m (Jaia89/Image_Visibility)."""
+    if criterion == "horizontal":
+        tests = [
+            P[0, 0] > P[0, 1] and P[0, 2] > P[0, 1],
+            P[0, 2] > P[1, 2] and P[2, 2] > P[1, 2],
+            P[2, 0] > P[2, 1] and P[2, 2] > P[2, 1],
+            P[0, 0] > P[1, 0] and P[2, 0] > P[1, 0],
+            P[0, 1] > P[1, 1] and P[2, 1] > P[1, 1],
+            P[1, 0] > P[1, 1] and P[1, 2] > P[1, 1],
+            P[0, 0] > P[1, 1] and P[2, 2] > P[1, 1],
+            P[0, 2] > P[1, 1] and P[2, 0] > P[1, 1],
+        ]
+    else:
+        tests = [
+            P[0, 2] > 2 * P[0, 1] - P[0, 0],
+            P[2, 2] > 2 * P[1, 2] - P[0, 2],
+            P[2, 0] > 2 * P[2, 1] - P[2, 2],
+            P[0, 0] > 2 * P[1, 0] - P[2, 0],
+            P[2, 1] > 2 * P[1, 1] - P[0, 1],
+            P[1, 2] > 2 * P[1, 1] - P[1, 0],
+            P[2, 2] > 2 * P[1, 1] - P[0, 0],
+            P[2, 0] > 2 * P[1, 1] - P[0, 2],
+        ]
+    return 1 + sum(int(t) << k for k, t in enumerate(tests))
+
+
+def test_matlab_numbering_conversion():
+    perm = ivg.paper_to_matlab_label(np.arange(1, 257))
+    assert sorted(perm.tolist()) == list(range(1, 257))  # it is a permutation
+    assert np.array_equal(ivg.matlab_to_paper_label(perm), np.arange(1, 257))
+    img = RNG.integers(0, 6, size=(12, 14)).astype(float)
+    for crit in ivg.CRITERIA:
+        lm = ivg.patch_label_map(img, 3, crit)
+        for i in range(lm.shape[0]):
+            for j in range(lm.shape[1]):
+                ref = matlab_reference_label(img[i : i + 3, j : j + 3], crit)
+                assert ivg.paper_to_matlab_label(int(lm[i, j])) == ref
+        Zm = ivg.patch_profile(img, 3, crit).to_dense(numbering="matlab")
+        Zref = np.bincount(
+            [matlab_reference_label(img[i : i + 3, j : j + 3], crit) - 1
+             for i in range(lm.shape[0]) for j in range(lm.shape[1])],
+            minlength=256,
+        )
+        assert np.array_equal(Zm, Zref)
+
+
+
+def test_lattice_flag_removes_only_neighbour_edges():
+    img = RNG.random((15, 17))
+    H, W = img.shape
+    for crit in ivg.CRITERIA:
+        full = {tuple(e) for e in ivg.image_visibility_graph(img, crit).edges.tolist()}
+        bare = {tuple(e) for e in ivg.image_visibility_graph(img, crit, lattice=False).edges.tolist()}
+        neighbours = set()
+        for u_ in range(H * W):
+            i, j = divmod(u_, W)
+            for di, dj in ((0, 1), (1, 0), (1, 1), (1, -1)):
+                if 0 <= i + di < H and 0 <= j + dj < W:
+                    neighbours.add((u_, (i + di) * W + j + dj))
+        assert neighbours <= full
+        assert bare == full - neighbours
+
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     failed = 0

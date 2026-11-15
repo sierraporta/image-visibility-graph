@@ -118,12 +118,14 @@ class ImageVisibilityGraph:
     criterion : "natural" (IVG) or "horizontal" (IHVG).
     edges : array (E, 2) of flat indices (i*W + j), with edges[:, 0] < edges[:, 1].
     directions : directions included.
+    lattice : whether the trivial 8-neighbourhood edges are included.
     """
 
     shape: tuple[int, int]
     criterion: str
     edges: np.ndarray
     directions: tuple[str, ...]
+    lattice: bool = True
 
     @property
     def n_nodes(self) -> int:
@@ -178,9 +180,17 @@ class ImageVisibilityGraph:
 
 
 def image_visibility_graph(
-    img, criterion: str = "natural", directions=DIRECTIONS
+    img, criterion: str = "natural", directions=DIRECTIONS, lattice: bool = True
 ) -> ImageVisibilityGraph:
     """Build the IVG (``criterion="natural"``) or IHVG (``"horizontal"``) of an image.
+
+    Parameters
+    ----------
+    img : 2D array.
+    criterion : {"natural", "horizontal"}.
+    directions : subset of ("rows", "cols", "diag", "antidiag").
+    lattice : include the trivial edges between adjacent pixels (8-neighbourhood),
+        which are always visible. Set ``False`` to keep only the informative edges.
 
     Cost: O(N^3) vectorized operations for an N×N image in the worst case
     (the IHVG usually stops earlier thanks to pruning).
@@ -198,11 +208,16 @@ def image_visibility_graph(
         idx = _line_index_matrix(H, W, direction)
         X = np.where(idx >= 0, flat[np.maximum(idx, 0)], np.nan)
         l, a, b = _visibility_edges_lines(X, criterion)
+        if not lattice:
+            keep = (b - a) > 1
+            l, a, b = l[keep], a[keep], b[keep]
         u, v = idx[l, a], idx[l, b]
         chunks.append(np.stack([np.minimum(u, v), np.maximum(u, v)], 1))
     edges = np.concatenate(chunks) if chunks else np.empty((0, 2), dtype=np.int64)
     edges = edges[np.lexsort((edges[:, 1], edges[:, 0]))]
-    return ImageVisibilityGraph(shape=(H, W), criterion=criterion, edges=edges, directions=directions)
+    return ImageVisibilityGraph(
+        shape=(H, W), criterion=criterion, edges=edges, directions=directions, lattice=bool(lattice)
+    )
 
 
 def degree_map(img, criterion: str = "natural") -> np.ndarray:

@@ -120,16 +120,26 @@ def _code_dtype(order: int):
     return np.int64
 
 
-def patch_codes(img, order: int = 3, criterion: str = "horizontal") -> np.ndarray:
+def _check_stride(stride) -> int:
+    s = int(stride)
+    if s != stride or s < 1:
+        raise ValueError(f"stride must be an integer >= 1 (got {stride!r}).")
+    return s
+
+
+def patch_codes(img, order: int = 3, criterion: str = "horizontal", stride: int = 1) -> np.ndarray:
     """Motif code of every line of every patch.
 
-    Returns an array ``(H-p+1, W-p+1, n_lines)``; patch ``[i, j]`` is
-    ``img[i:i+p, j:j+p]`` and lines follow :func:`patch_layout`.
+    Returns an array ``(H', W', n_lines)``; patch ``[i, j]`` is
+    ``img[i*stride : i*stride+p, j*stride : j*stride+p]`` and lines follow
+    :func:`patch_layout`. With the default ``stride=1`` (as in the paper),
+    ``H' = H-p+1`` and ``W' = W-p+1``.
     """
     p = _check_order(order)
     criterion = check_criterion(criterion)
+    stride = _check_stride(stride)
     I = as_image(img, min_size=p)
-    windows = sliding_window_view(I, (p, p))  # (H', W', p, p), view without copy
+    windows = sliding_window_view(I, (p, p))[::stride, ::stride]  # view without copy
     Hp, Wp = windows.shape[:2]
     layout = patch_layout(p)
     out = np.empty((Hp, Wp, len(layout)), dtype=_code_dtype(p))
@@ -168,8 +178,8 @@ def _label_from_code_row(row: Sequence[int], order: int) -> int:
     return lab + 1
 
 
-def patch_label_map(img, order: int = 3, criterion: str = "horizontal") -> np.ndarray:
-    """``(H-p+1, W-p+1)`` map with the label (>= 1) of the patch anchored at each pixel.
+def patch_label_map(img, order: int = 3, criterion: str = "horizontal", stride: int = 1) -> np.ndarray:
+    """Map with the label (>= 1) of every patch (shape ``(H-p+1, W-p+1)`` for stride 1).
 
     Only available when the label fits in int64 (p <= 4). For higher orders
     use :func:`patch_profile` and its ``label_map()`` method.
@@ -180,7 +190,49 @@ def patch_label_map(img, order: int = 3, criterion: str = "horizontal") -> np.nd
             f"For order={p} the label has {label_bits(p)} bits and does not fit in int64; "
             "use patch_profile(...).label_map() instead."
         )
-    return _labels_from_codes_int64(patch_codes(img, p, criterion), p)
+    return _labels_from_codes_int64(patch_codes(img, p, criterion, stride), p)
+
+
+# Order-3 labels in the reference MATLAB code (Jacopo Iacovacci, github.com/Jaia89/Image_Visibility)
+# use a different numbering from Algorithm 1 of the paper: the bit string is
+# [r1, c3, r3, c1, c2, r2, d1, d2] and its first element is the LEAST significant bit.
+# The set of patches is identical; only the numbering differs.
+_MATLAB_LINE_ORDER = ("r1", "c3", "r3", "c1", "c2", "r2", "d1", "d2")
+_PAPER_LINE_ORDER = ("r1", "r2", "r3", "c1", "c2", "c3", "d1", "d2")
+
+
+@lru_cache(maxsize=None)
+def _paper_to_matlab_table() -> np.ndarray:
+    table = np.zeros(257, dtype=np.int64)
+    for lab in range(1, 257):
+        v = lab - 1
+        bits = {name: (v >> (7 - i)) & 1 for i, name in enumerate(_PAPER_LINE_ORDER)}
+        table[lab] = 1 + sum(bits[name] << k for k, name in enumerate(_MATLAB_LINE_ORDER))
+    table.setflags(write=False)
+    return table
+
+
+def paper_to_matlab_label(label):
+    """Convert order-3 labels from the paper's numbering to the reference MATLAB numbering.
+
+    Use it to compare results with ``visibilityPatches.m``. Accepts an int or an array.
+    """
+    lab = np.asarray(label, dtype=np.int64)
+    if np.any((lab < 1) | (lab > 256)):
+        raise ValueError("Order-3 labels must lie in [1, 256].")
+    out = _paper_to_matlab_table()[lab]
+    return int(out) if out.ndim == 0 else out
+
+
+def matlab_to_paper_label(label):
+    """Inverse of :func:`paper_to_matlab_label`."""
+    lab = np.asarray(label, dtype=np.int64)
+    if np.any((lab < 1) | (lab > 256)):
+        raise ValueError("Order-3 labels must lie in [1, 256].")
+    inv = np.zeros(257, dtype=np.int64)
+    inv[_paper_to_matlab_table()[1:]] = np.arange(1, 257)
+    out = inv[lab]
+    return int(out) if out.ndim == 0 else out
 
 
 def decode_label(label: int, order: int = 3) -> dict:
@@ -222,8 +274,8 @@ class PatchProfile:
     labels : array (n,) of Python ints (object dtype) with the observed labels, sorted.
     counts : array (n,) with the number of patches carrying each label.
     codes  : array (n, n_lines) with the per-line motif code of each label.
-    shape  : shape (H-p+1, W-p+1) of the patch grid.
-    inverse : array (H-p+1, W-p+1) with the index into ``labels`` of each patch.
+    shape  : shape of the patch grid ((H-p+1, W-p+1) for stride 1).
+    inverse : array with that shape holding the index into ``labels`` of each patch.
     """
 
     order: int
@@ -260,19 +312,29 @@ class PatchProfile:
         order = np.argsort(-self.counts, kind="stable")[:n]
         return [(int(self.labels[i]), int(self.counts[i])) for i in order]
 
-    def to_dense(self, normalize: bool = False) -> np.ndarray:
+    def to_dense(self, normalize: bool = False, numbering: str = "paper") -> np.ndarray:
         """Dense vector of length ``n_labels(order)``; position ``l-1`` holds label ``l``.
 
-        For p = 3 this is the paper's Z = (Z_1, ..., Z_256).
+        For p = 3 this is the paper's Z = (Z_1, ..., Z_256). With
+        ``numbering="matlab"`` (p = 3 only) the entries follow the numbering of
+        the reference MATLAB code, so the result can be compared directly
+        with the output of ``visibilityPatches.m``.
         """
         if label_bits(self.order) > DENSE_MAX_BITS:
             raise ValueError(
                 f"For order={self.order} there are 2^{label_bits(self.order)} possible labels; "
                 "use as_dict()/to_series(), or profile_matrix() for several images."
             )
+        if numbering not in ("paper", "matlab"):
+            raise ValueError("numbering must be 'paper' or 'matlab'.")
+        labels = np.asarray(self.labels, dtype=np.int64)
+        if numbering == "matlab":
+            if self.order != 3:
+                raise ValueError("numbering='matlab' is only defined for order 3.")
+            labels = paper_to_matlab_label(labels)
         vals = self.frequencies() if normalize else self.counts
         Z = np.zeros(n_labels(self.order), dtype=vals.dtype)
-        Z[np.asarray(self.labels, dtype=np.int64) - 1] = vals
+        Z[labels - 1] = vals
         return Z
 
     def label_map(self) -> np.ndarray:
@@ -282,8 +344,12 @@ class PatchProfile:
         return self.labels[self.inverse]
 
 
-def patch_profile(img, order: int = 3, criterion: str = "horizontal") -> PatchProfile:
+def patch_profile(
+    img, order: int = 3, criterion: str = "horizontal", stride: int = 1
+) -> PatchProfile:
     """Order-p Visibility Patch profile (HVP_p if horizontal, VP_p if natural).
+
+    ``stride`` is the step between consecutive patches (1 in the paper).
 
     Example
     -------
@@ -292,7 +358,7 @@ def patch_profile(img, order: int = 3, criterion: str = "horizontal") -> PatchPr
     """
     p = _check_order(order)
     criterion = check_criterion(criterion)
-    codes = patch_codes(img, p, criterion)
+    codes = patch_codes(img, p, criterion, stride)
     Hp, Wp, n = codes.shape
     flat = np.ascontiguousarray(codes.reshape(-1, n))
     rows = flat.view(np.dtype((np.void, flat.dtype.itemsize * n))).ravel()
